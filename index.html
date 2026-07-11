@@ -691,6 +691,14 @@
       -webkit-text-fill-color: var(--text);
     }
 
+    /* During active typing, show exact plain-text layout and suspend all particles.
+       The optimized effect layer is rebuilt only after the user pauses. */
+    .is-typing #effectCanvas { display: none; }
+    .is-typing .effect-marker {
+      color: var(--text);
+      -webkit-text-fill-color: var(--text);
+    }
+
     .statusbar {
       flex: 0 0 auto;
       display: flex; justify-content: space-between; gap: 12px;
@@ -803,7 +811,7 @@
     <header class="topbar">
       <div>
         <h1>Kinetic Word Effects Editor</h1>
-        <p class="subtitle">Build 15 keeps the active caret line visible above the iPhone keyboard and removes the unused gap below the editor.</p>
+        <p class="subtitle">Build 16 renders effects only near the visible editor area and suspends particles while you type.</p>
       </div>
       <div class="actions">
         <button id="sampleBtn">Restore sample</button>
@@ -838,7 +846,7 @@
         <textarea id="editor" aria-label="Kinetic text editor" placeholder="Start typing…" dir="ltr" spellcheck="false" wrap="soft" inputmode="text" enterkeyhint="enter" autocapitalize="sentences" autocomplete="off" autocorrect="on"></textarea>
       </div>
       <footer class="statusbar">
-        <span id="status">Effects are live · iPhone caret-safe viewport · Build 15</span>
+        <span id="status">Effects are live · visible-only + typing pause · Build 16</span>
         <span id="counter">0 words · 0 characters</span>
       </footer>
     </section>
@@ -890,10 +898,15 @@
       const effectRegex = new RegExp(`\\b(${effectWords.join('|')})\\b`, 'gi');
 
       let renderFrame = 0;
+      let renderNeedsEffects = true;
+      let visibleEffectsTimer = 0;
+      let typingTimer = 0;
       let caretFrame = 0;
       let caretTimerShort = 0;
       let caretTimerLong = 0;
       let composing = false;
+      const typingIdleDelay = 160;
+      const scrollEffectsDelay = 80;
       const random = (min, max) => Math.random() * (max - min) + min;
 
       function getText() {
@@ -1210,27 +1223,56 @@
         /* Preserve the final empty line exactly like a textarea. */
         fragment.appendChild(document.createTextNode('\u200b'));
         flowContent.replaceChildren(fragment);
-        buildEffectCanvas();
       }
 
       function buildEffectCanvas() {
         effectCanvas.replaceChildren();
-        if (shell.classList.contains('effects-off')) return;
+        if (shell.classList.contains('effects-off') || shell.classList.contains('is-typing')) return;
 
         const canvasHeight = Math.max(displayLayer.scrollHeight, displayLayer.clientHeight);
         effectCanvas.style.height = `${canvasHeight}px`;
         effectCanvas.style.width = `${displayLayer.clientWidth}px`;
 
         const layerRect = displayLayer.getBoundingClientRect();
+        const visibilityPadding = Math.max(24, Math.min(72, displayLayer.clientHeight * 0.08));
+        const visibleTop = layerRect.top - visibilityPadding;
+        const visibleBottom = layerRect.bottom + visibilityPadding;
+        const visibleLeft = layerRect.left - visibilityPadding;
+        const visibleRight = layerRect.right + visibilityPadding;
+        const contentTop = displayLayer.scrollTop - visibilityPadding;
+        const contentBottom = displayLayer.scrollTop + displayLayer.clientHeight + visibilityPadding;
+        const contentLeft = displayLayer.scrollLeft - visibilityPadding;
+        const contentRight = displayLayer.scrollLeft + displayLayer.clientWidth + visibilityPadding;
         const fragment = document.createDocumentFragment();
 
         flowContent.querySelectorAll('.effect-marker').forEach(marker => {
+          /* Cheap content-coordinate culling first. Expensive client-rect
+             measurement only runs for markers close to the visible viewport. */
+          const markerTop = marker.offsetTop;
+          const markerBottom = markerTop + marker.offsetHeight;
+          const markerLeft = marker.offsetLeft;
+          const markerRight = markerLeft + marker.offsetWidth;
+          if (
+            markerBottom < contentTop ||
+            markerTop > contentBottom ||
+            markerRight < contentLeft ||
+            markerLeft > contentRight
+          ) return;
+
           const rects = Array.from(marker.getClientRects()).filter(rect => rect.width > 0 && rect.height > 0);
           if (!rects.length) return;
 
-          /* Keywords fit on normal phone/desktop lines. Using the first rect also
-             prevents a split marker from ever drawing one word twice. */
+          /* The marker remains in the normal text flow. We only instantiate an
+             animated copy when its final wrapped position intersects the visible
+             editor viewport (plus a small particle-overflow margin). */
           const rect = rects[0];
+          const outsideViewport =
+            rect.bottom < visibleTop ||
+            rect.top > visibleBottom ||
+            rect.right < visibleLeft ||
+            rect.left > visibleRight;
+          if (outsideViewport) return;
+
           const rawWord = marker.dataset.word;
           const type = rawWord.toLowerCase();
           const config = effectConfig[type];
@@ -1253,19 +1295,52 @@
         effectCanvas.appendChild(fragment);
       }
 
+      function scheduleVisibleEffectsRefresh(immediate = false) {
+        clearTimeout(visibleEffectsTimer);
+        if (shell.classList.contains('effects-off') || shell.classList.contains('is-typing')) return;
+
+        const refresh = () => {
+          visibleEffectsTimer = 0;
+          requestAnimationFrame(buildEffectCanvas);
+        };
+
+        if (immediate) refresh();
+        else visibleEffectsTimer = window.setTimeout(refresh, scrollEffectsDelay);
+      }
+
+      function beginTypingCycle() {
+        shell.classList.add('is-typing');
+        clearTimeout(typingTimer);
+        clearTimeout(visibleEffectsTimer);
+        queueRender(false);
+
+        typingTimer = window.setTimeout(() => {
+          typingTimer = 0;
+          shell.classList.remove('is-typing');
+          queueRender(true);
+        }, typingIdleDelay);
+      }
+
       function render() {
         renderFrame = 0;
+        const shouldBuildEffects = renderNeedsEffects && !shell.classList.contains('is-typing');
+        renderNeedsEffects = false;
+
         const text = getText();
         updateCounter(text);
         syncScrollbarWidth();
         syncScroll();
         buildDisplay(text);
         syncScroll();
+        if (shouldBuildEffects) buildEffectCanvas();
         scheduleCaretVisibility();
       }
 
-      function queueRender() {
-        if (composing || renderFrame) return;
+      function queueRender(rebuildEffects = true) {
+        renderNeedsEffects = renderNeedsEffects || rebuildEffects;
+        /* Plain text must continue updating during IME composition; the
+           is-typing class already guarantees that particles stay suspended. */
+        if (renderFrame) return;
         renderFrame = requestAnimationFrame(render);
       }
 
@@ -1291,12 +1366,27 @@
         lastTouchEnd = now;
       }, { passive: false });
 
-      editor.addEventListener('input', () => { queueRender(); scheduleCaretVisibility(); });
-      editor.addEventListener('scroll', syncScroll, { passive: true });
+      editor.addEventListener('input', () => {
+        beginTypingCycle();
+        scheduleCaretVisibility();
+      });
+      editor.addEventListener('scroll', () => {
+        syncScroll();
+        scheduleVisibleEffectsRefresh();
+      }, { passive: true });
       editor.addEventListener('wheel', lockHorizontalScroll, { passive: true });
       editor.addEventListener('touchmove', lockHorizontalScroll, { passive: true });
-      editor.addEventListener('compositionstart', () => { composing = true; });
-      editor.addEventListener('compositionend', () => { composing = false; queueRender(); scheduleCaretVisibility(); });
+      editor.addEventListener('compositionstart', () => {
+        composing = true;
+        shell.classList.add('is-typing');
+        clearTimeout(typingTimer);
+        clearTimeout(visibleEffectsTimer);
+      });
+      editor.addEventListener('compositionend', () => {
+        composing = false;
+        beginTypingCycle();
+        scheduleCaretVisibility();
+      });
       window.addEventListener('resize', () => { updateVisualViewport(); lockHorizontalScroll(); queueRender(); }, { passive: true });
       window.addEventListener('scroll', lockHorizontalScroll, { passive: true });
       window.visualViewport?.addEventListener('resize', updateVisualViewport, { passive: true });
@@ -1311,15 +1401,18 @@
       editor.addEventListener('blur', () => {
         clearTimeout(caretTimerShort);
         clearTimeout(caretTimerLong);
+        clearTimeout(typingTimer);
+        shell.classList.remove('is-typing');
         body.classList.remove('keyboard-open');
         updateVisualViewport();
+        queueRender(true);
       });
 
       toggleBtn.addEventListener('click', () => {
         const paused = shell.classList.toggle('effects-off');
         toggleBtn.textContent = paused ? 'Resume effects' : 'Pause effects';
-        status.textContent = paused ? 'Effects are paused · Noticia Text remains editable' : 'Effects are live · iPhone caret-safe viewport · Build 15';
-        queueRender();
+        status.textContent = paused ? 'Effects are paused · Noticia Text remains editable' : 'Effects are live · visible-only + typing pause · Build 16';
+        queueRender(!paused);
       });
 
       sampleBtn.addEventListener('click', () => {
