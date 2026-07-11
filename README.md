@@ -282,13 +282,7 @@ The page respects `prefers-reduced-motion` by minimizing animation duration for 
 
 ## File Structure
 
-The project is contained in one HTML file:
-
-```text
-kinetic_word_effects_editor_build14_wrap_alignment_fix.html
-```
-
-The file includes:
+The project is contained in one HTML file.The file includes:
 
 - HTML interface markup
 - Responsive desktop and iPhone CSS
@@ -319,4 +313,4 @@ When hosting the page, use HTTPS so browser sharing, mobile APIs, and future web
 
 ## License
 
-No software license is included by default. Add an appropriate license before redistributing or publishing the project.
+MIT — see [LICENSE](LICENSE) for details.
