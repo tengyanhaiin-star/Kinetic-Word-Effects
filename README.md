@@ -52,7 +52,7 @@ Keyword matching is case-insensitive and applies only to complete words.
 
 No installation or build process is required.
 
-1. Open the Kinetic Word Effects Editor in a modern web browser.
+1. Open the [Kinetic Word Effects Editor](https://tengyanhaiin-star.github.io/Kinetic-Word-Effects/) in a modern web browser.
 2. Type or paste text into the editor.
 3. Enter any supported keyword to trigger its effect.
 
